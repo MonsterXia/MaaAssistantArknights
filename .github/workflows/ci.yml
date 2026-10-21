@@ -10,7 +10,23 @@ on:
 permissions:
   contents: read
 jobs:
+  support:
+    if: github.event_name == 'push'
+    runs-on: windows-2025-vs2026
+    steps:
+      - name: Collect local Debug CRT support
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force debug-crt | Out-Null
+          $vsRoot = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+          Get-ChildItem "$vsRoot/VC/Redist/MSVC" -Recurse -Filter *.dll | Where-Object { $_.FullName -match 'debug_nonredist.*x64.*DebugCRT' } | Copy-Item -Destination debug-crt -Force
+          Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Recurse -Filter ucrtbased.dll | Where-Object { $_.FullName -match 'x64' } | Copy-Item -Destination debug-crt -Force
+      - uses: actions/upload-artifact@v7
+        with:
+          name: issue-18622-debug-crt
+          path: debug-crt
   debug:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7
