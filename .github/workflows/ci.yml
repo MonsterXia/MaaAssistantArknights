@@ -10,6 +10,44 @@ on:
 permissions:
   contents: read
 jobs:
+  regression:
+    if: github.event_name == 'push'
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 067a1d6852b36bf3edb1aac71240f48cef27c79f
+      - uses: actions/download-artifact@v8
+        with:
+          name: issue-18622-debug-runtime
+          run-id: 39609463332
+          github-token: ${{ github.token }}
+          path: runtime
+      - uses: actions/download-artifact@v8
+        with:
+          name: issue-18622-debug-crt
+          run-id: 39611033460
+          github-token: ${{ github.token }}
+          path: runtime
+      - name: Original transition-frame regression
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/user-attachments/files/33333713/report_10-12_material-synthesis_part02.zip -OutFile report.zip
+          Expand-Archive report.zip report
+          @'
+          import json, pathlib, re, sys
+          sys.path.insert(0, 'tools')
+          from maa_core_eval import CoreEval
+          source = pathlib.Path('src/MaaCore/Task/Infrast/InfrastProcessingTask.cpp').read_text(encoding='utf-8')
+          confirm = source.split('bool asst::InfrastProcessingTask::confirm_material_synthesis_selection()')[1].split('\nbool ')[0]
+          task = re.search(r'ProcessTask verify\(\*this, \{ "([^"]+)" \}\)', confirm).group(1)
+          image = next(pathlib.Path('report').rglob('2026.10.12-16.58.45.655_raw.png'))
+          with CoreEval(dll_dir='runtime') as ev:
+              results = ev.report([image], [task, 'MiniGame@MaterialSynthesis@Workshop', 'MiniGame@MaterialSynthesis@Increase'])
+              print(json.dumps(results, indent=2))
+              assert not results[0]['results'][0]['hit'], 'Operator confirmation incorrectly accepts the transition frame'
+          '@ | Set-Content regression.py
+          python regression.py
   support:
     if: github.event_name == 'push'
     runs-on: windows-2025-vs2026
