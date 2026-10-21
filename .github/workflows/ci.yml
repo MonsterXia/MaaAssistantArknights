@@ -23,6 +23,7 @@ jobs:
           import subprocess
           import sys
           import tempfile
+          import os
           
           root = pathlib.Path.cwd()
           processing = (root / 'src/MaaCore/Task/Infrast/InfrastProcessingTask.cpp').read_text(encoding='utf-8')
@@ -121,9 +122,13 @@ jobs:
           '''
           with tempfile.TemporaryDirectory() as directory:
               source = pathlib.Path(directory) / 'selection.cpp'
-              binary = pathlib.Path(directory) / 'selection'
+              binary = pathlib.Path(directory) / ('selection.exe' if os.name == 'nt' else 'selection')
               source.write_text(prefix + extract(processing, 'bool asst::InfrastProcessingTask::confirm_material_synthesis_selection()') + '\n' + extract(plugin, 'asst::MaterialSynthesisTaskPlugin::Result asst::MaterialSynthesisTaskPlugin::select_processing_operator(') + suffix, encoding='utf-8')
-              subprocess.run(['g++', '-std=c++20', '-O0', '-g', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(binary)], check=True)
+              if os.name == 'nt':
+                  command = ['cl', '/nologo', '/std:c++20', '/Od', '/Zi', '/W4', '/WX', '/EHsc', str(source), '/Fe:' + str(binary)]
+              else:
+                  command = ['g++', '-std=c++20', '-O0', '-g', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(binary)]
+              subprocess.run(command, check=True)
               sys.exit(subprocess.run([str(binary)]).returncode)
           PY
           python /tmp/selection_regression.py
@@ -201,3 +206,131 @@ jobs:
             python regression.py $client
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+  selection-regression-windows:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.code_ref || '5e383c4f6769fdba28cac6f50644ab6b448590f5' }}
+      - name: Selection readiness failure propagation
+        shell: bash
+        run: |
+          cat > /tmp/selection_regression.py <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+          import os
+          
+          root = pathlib.Path.cwd()
+          processing = (root / 'src/MaaCore/Task/Infrast/InfrastProcessingTask.cpp').read_text(encoding='utf-8')
+          plugin = (root / 'src/MaaCore/Task/MiniGame/MaterialSynthesisTaskPlugin.cpp').read_text(encoding='utf-8')
+          
+          def extract(source, signature):
+              start = source.index(signature)
+              brace = source.index('{', start)
+              depth = 1
+              end = brace + 1
+              while depth:
+                  depth += (source[end] == '{') - (source[end] == '}')
+                  end += 1
+              return source[start:end]
+          
+          # Execute the actual confirmation and caller bodies. The external UI and
+          # operator scan are controlled doubles; no matching or full task-flow claim.
+          prefix = r'''
+          #include <iostream>
+          #include <initializer_list>
+          #include <string>
+          struct Scenario {
+              bool ready = true, cancel_on_ready = false, cancelled = false;
+              bool candidate = true, changed = true, confirmation = true, open = true, workshop = true;
+              int ready_calls = 0, fallback_calls = 0;
+          } state;
+          bool task(const std::string& name) {
+              if (name.ends_with("OperatorSelectionReady")) {
+                  ++state.ready_calls;
+                  if (state.cancel_on_ready) { state.cancelled = true; return true; }
+                  return state.ready;
+              }
+              if (name == "InfrastDormConfirmButton") return state.confirmation;
+              if (name.ends_with("OpenOperatorList")) return state.open;
+              throw name;
+          }
+          namespace asst {
+          struct InfrastProcessingTask {
+              bool need_exit() const { return state.cancelled; }
+              bool confirm_material_synthesis_selection();
+              bool select_operator(const std::string&, int, bool& changed) {
+                  changed = false;
+                  if (!state.candidate || !confirm_material_synthesis_selection()) return false;
+                  changed = state.changed;
+                  return true;
+              }
+          };
+          struct ProcessTask {
+              std::string name;
+              ProcessTask(InfrastProcessingTask&, std::initializer_list<const char*> names): name(*names.begin()) {}
+              void set_retry_times(int) {}
+              bool run() { return task(name); }
+          };
+          struct MaterialSynthesisTaskPlugin {
+              enum class Result { Completed, InsufficientResources, OperatorUnavailable, Unsupported, NavigationFailed, Cancelled };
+              bool need_exit() const { return state.cancelled; }
+              bool run_task(const std::string& name, int = 3) { return task(name); }
+              bool return_to_workshop() { ++state.fallback_calls; return state.workshop; }
+              Result select_processing_operator(const std::string&, int, bool, bool&, InfrastProcessingTask&);
+          };
+          }
+          '''
+          suffix = r'''
+          int main() {
+              using Plugin = asst::MaterialSynthesisTaskPlugin;
+              using Result = Plugin::Result;
+              int failures = 0, tests = 0;
+              auto check = [&](const char* name, Scenario scenario, bool missing, Result expected, bool expected_changed, int fallback) {
+                  state = scenario;
+                  Plugin plugin;
+                  asst::InfrastProcessingTask processing;
+                  bool changed = false;
+                  const auto result = plugin.select_processing_operator("30013", 3, missing, changed, processing);
+                  ++tests;
+                  // Changed state is only usable when the complete selection is ready.
+                  const bool passed = result == expected && state.fallback_calls == fallback &&
+                      (expected != Result::Completed || changed == expected_changed);
+                  std::cout << (passed ? "PASS " : "FAIL ") << name << " result=" << int(result)
+                            << " expected=" << int(expected) << " changed=" << changed
+                            << " fallback=" << state.fallback_calls << '\n';
+                  failures += !passed;
+              };
+              check("readiness timeout with incumbent", {.ready=false}, false, Result::NavigationFailed, false, 0);
+              check("readiness timeout with empty slot", {.ready=false}, true, Result::NavigationFailed, false, 0);
+              check("cancellation reported as successful ProcessTask", {.cancel_on_ready=true}, false, Result::Cancelled, false, 0);
+              check("changed operator ready", {}, false, Result::Completed, true, 0);
+              check("same operator ready", {.changed=false}, false, Result::Completed, false, 0);
+              check("same operator readiness timeout", {.ready=false, .changed=false}, false, Result::NavigationFailed, false, 0);
+              check("no candidate keeps incumbent", {.candidate=false}, false, Result::Completed, false, 1);
+              check("no candidate and empty slot", {.candidate=false}, true, Result::OperatorUnavailable, false, 1);
+              check("cannot return after no candidate", {.candidate=false, .workshop=false}, false, Result::NavigationFailed, false, 1);
+              check("cannot open operator list", {.open=false}, false, Result::NavigationFailed, false, 0);
+              std::cout << tests << " cases; " << failures << " failures\n";
+              return failures ? 1 : 0;
+          }
+          '''
+          with tempfile.TemporaryDirectory() as directory:
+              source = pathlib.Path(directory) / 'selection.cpp'
+              binary = pathlib.Path(directory) / ('selection.exe' if os.name == 'nt' else 'selection')
+              source.write_text(prefix + extract(processing, 'bool asst::InfrastProcessingTask::confirm_material_synthesis_selection()') + '\n' + extract(plugin, 'asst::MaterialSynthesisTaskPlugin::Result asst::MaterialSynthesisTaskPlugin::select_processing_operator(') + suffix, encoding='utf-8')
+              if os.name == 'nt':
+                  command = ['cl', '/nologo', '/std:c++20', '/Od', '/Zi', '/W4', '/WX', '/EHsc', str(source), '/Fe:' + str(binary)]
+              else:
+                  command = ['g++', '-std=c++20', '-O0', '-g', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(binary)]
+              subprocess.run(command, check=True)
+              sys.exit(subprocess.run([str(binary)]).returncode)
+          PY
+          cp /tmp/selection_regression.py selection_regression.py
+      - name: Compile and run selection regression
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath`) do call "%%i/VC/Auxiliary/Build/vcvars64.bat"
+          python selection_regression.py
