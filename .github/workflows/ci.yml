@@ -1,5 +1,7 @@
 name: Issue 18622 Debug verification
 on:
+  push:
+    branches: [codex/verify-18622-debug]
   workflow_dispatch:
     inputs:
       code_ref:
@@ -13,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.code_ref }}
+          ref: ${{ inputs.code_ref || '067a1d6852' }}
       - name: Fetch MaaUtils
         shell: bash
         run: bash .github/scripts/sync-optional-submodules.sh --init --depth 1 src/MaaUtils
