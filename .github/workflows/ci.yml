@@ -91,10 +91,12 @@ jobs:
         shell: bash
         run: bash .github/scripts/sync-optional-submodules.sh --init --depth 1 src/MaaUtils
       - uses: actions/cache@v6
+        id: deps-cache
         with:
           path: src/MaaUtils/MaaDeps
           key: issue-18622-windows-maadeps-${{ hashFiles('tools/maadeps-download.py') }}
       - name: Dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python tools/maadeps-download.py x64-windows
