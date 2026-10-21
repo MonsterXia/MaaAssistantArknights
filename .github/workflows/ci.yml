@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 067a1d6852b36bf3edb1aac71240f48cef27c79f
+          ref: codex/fix-18622-synthesis-readiness
       - uses: actions/download-artifact@v8
         with:
           name: issue-18622-debug-runtime
@@ -42,15 +42,29 @@ jobs:
           confirm = source.split('bool asst::InfrastProcessingTask::confirm_material_synthesis_selection()')[1].split('\nbool ')[0]
           task = re.search(r'ProcessTask verify\(\*this, \{ "([^"]+)" \}\)', confirm).group(1)
           image = next(pathlib.Path('report').rglob('2026.10.12-16.58.45.655_raw.png'))
-          ev = CoreEval(dll_dir='runtime')
+          from PIL import Image
+          positive = Image.new('RGB', (1280,720), (32,32,32))
+          positive.paste(Image.open('resource/template/InfrastPic/Processing/ProcessingIncrease.png').convert('RGB'), (1050,270))
+          positive.save('synthetic-ready.png')
+          Image.new('RGB', (1280,720)).save('blank.png')
+          client = sys.argv[1]
+          ev = CoreEval(dll_dir='runtime', global_client=None if client=='Official' else client)
           try:
               results = ev.report([image], [task, 'MiniGame@MaterialSynthesis@Workshop', 'MiniGame@MaterialSynthesis@Increase'])
               print(json.dumps(results, indent=2))
               assert not results[0]['results'][0]['hit'], 'Operator confirmation incorrectly accepts the transition frame'
+              controls = ev.report(['synthetic-ready.png','blank.png'], [task])
+              print(client, json.dumps(controls, indent=2))
+              assert controls[0]['results'][0]['hit'], 'Ready operation control should be accepted'
+              assert not controls[1]['results'][0]['hit'], 'Blank page must not be accepted'
           finally:
               ev.close()
           '@ | Set-Content regression.py
-          python regression.py
+          python -m pip install pillow
+          foreach ($client in 'Official','YoStarJP','YoStarEN','YoStarKR','txwy') {
+            python regression.py $client
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
   support:
     if: github.event_name == 'push'
     runs-on: windows-2025-vs2026
