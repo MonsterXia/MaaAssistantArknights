@@ -42,10 +42,13 @@ jobs:
           confirm = source.split('bool asst::InfrastProcessingTask::confirm_material_synthesis_selection()')[1].split('\nbool ')[0]
           task = re.search(r'ProcessTask verify\(\*this, \{ "([^"]+)" \}\)', confirm).group(1)
           image = next(pathlib.Path('report').rglob('2026.10.12-16.58.45.655_raw.png'))
-          with CoreEval(dll_dir='runtime') as ev:
+          ev = CoreEval(dll_dir='runtime')
+          try:
               results = ev.report([image], [task, 'MiniGame@MaterialSynthesis@Workshop', 'MiniGame@MaterialSynthesis@Increase'])
               print(json.dumps(results, indent=2))
               assert not results[0]['results'][0]['hit'], 'Operator confirmation incorrectly accepts the transition frame'
+          finally:
+              ev.close()
           '@ | Set-Content regression.py
           python regression.py
   support:
